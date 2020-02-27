@@ -23,6 +23,10 @@
 %define r7 rbx
 %endif
 
+%ifdef WINABI
+export yuv2lab_709_32f_ivb
+%endif
+
 extern cvtcolor_dt
 global yuv2lab_709_32f_ivb
 
@@ -294,6 +298,8 @@ vmovups        [r1+r2-10h],i
 vmovups        [r1+r3-10h],t
 cmp            r10,r1
 ja             .1
+; todo: last 4-7
+; % 0 - last 4; 1 - dec ptr, rep & last 4; 2...
 
 %ifdef WINABI
 vmovups xmm15,[rsp-80]

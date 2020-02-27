@@ -20,6 +20,10 @@
 %define r7 rbx
 %endif
 
+%ifdef WINABI
+export lab2yuv_709_32f_ivb
+%endif
+
 extern cvtcolor_dt
 global lab2yuv_709_32f_ivb
 

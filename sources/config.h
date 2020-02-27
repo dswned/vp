@@ -3,7 +3,12 @@
 #define FFTW_DLL
 #define BOOST_AUTO_LINK_SYSTEM
 
+#define BUILD_ADDGRAIN
 #define BUILD_CVTCOLOR
+
+#if defined(_WIN32)
+#define strtok_r strtok_s
+#endif
 
 #if defined(_MSC_VER)
 #define FORCE_INLINE __forceinline

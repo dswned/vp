@@ -4,10 +4,6 @@
 #include "cpu.h"
 #include "filter.h"
 
-#if defined(_WIN32)
-#define strtok_r strtok_s
-#endif
-
 typedef void(*cvt_f)(size_t, void*, void*, void*, void*, void*, void*);
 extern "C" std::remove_pointer_t<cvt_f> yuv2lab_709_32f_ivb, lab2yuv_709_32f_ivb;
 
@@ -108,9 +104,9 @@ void create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI* vsapi
 const char filter::name[] = "cvtcolor";
 const char filter::args[] = "clip:clip;params:data;";
 
-struct reg_s
+struct reg
 {
-	reg_s() {
+	reg() {
 		vregf.emplace_back([](VSRegisterFunction registerFunc, VSPlugin* plugin) {
 			registerFunc(filter::name, filter::args, create, plugin, plugin); });
 	}

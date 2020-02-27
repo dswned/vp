@@ -6,7 +6,7 @@
 #include "vp.h"
 #endif
 
-const VSAPI* vsapi = nullptr;
+const VSAPI* vsapi = 0;
 std::vector<void(*)(VSRegisterFunction, VSPlugin*)> vregf;
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin* plugin)

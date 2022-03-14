@@ -1,55 +1,32 @@
-; L, a, b scaled to fit rgb in 0..1,-.5+.5
-; Ivy Bridge specific code, ~78c / 4 yuv pixels
+; L, a, b scaled to fit YUV (valid RGB) in [0,1;-.5,+.5]
+; Ivy Bridge specific code, ~75c / 4 yuv pixels
 ;
-%include "yregs.asm"
-%ifidn __OUTPUT_FORMAT__, win64
-%define WINABI
-%define r0 rcx
-%define r1 rdx
-%define r2 r8
-%define r3 r9
-%define r4 rsi
-%define r5 rdi
-%define r6 rbp
-%define r7 rbx
-%else
-%define r0 rdi
-%define r1 rsi
-%define r2 rdx
-%define r3 rcx
-%define r4 r8
-%define r5 r9
-%define r6 rbp
-%define r7 rbx
-%endif
+%define vsize 32
+%include "regs.asm"
 
-%ifdef WINABI
-export yuv2lab_709_32f_ivb
-%endif
-
-extern cvtcolor_dt
-global yuv2lab_709_32f_ivb
+global yuv2lab_f32_ivb
+extern yuv2lab_f32_ivb_data
 
 section .text
 
-yuv2lab_709_32f_ivb:
-push           rbp
-push           rbx
+yuv2lab_f32_ivb:
+push   rbp
+push   rbx
 
 %ifdef WINABI
-push           rsi
-push           rdi
-mov            r4,[rsp+72]
-mov            r5,[rsp+80]
-mov            r6,[rsp+88]
-sub            rsp,88
+push   rsi
+push   rdi
+mov    r4,[rsp+72]
+mov    r5,[rsp+80]
+mov    r6,[rsp+88]
+sub    rsp,88
 %else
-mov            r6,[rsp+24]
+mov    r6,[rsp+24]
 %endif
 
-sub            r4,r1
-sub            r5,r1
-sub            r6,r1
+sub    r4,r1
+sub    r5,r1
+sub    r6,r1
 
 %ifdef WINABI
 vmovups [rsp-80],xmm15
@@ -64,8 +41,8 @@ vmovups [rsp+48], xmm7
 vmovups [rsp+64], xmm6
 %endif
 
-lea            r10,[r0+r1]
-lea            r0,[rel cvtcolor_dt+1312]
+lea    r10,[r0+r1]
+lea    r0,[rel yuv2lab_f32_ivb_data+1312]
 
 vbroadcastf128 F,[r1+r4]
 vbroadcastf128 H,[r1+r5]
@@ -76,13 +53,13 @@ vmulps         N,N,[r0+20h]
 vaddps         N,N,H
 vextractf128   v,N,1
 
-lea            r7,[rel cvtcolor_dt+160]
-sub            r2,r1
-sub            r3,r1
+lea    r7,[rel yuv2lab_f32_ivb_data+160]
+sub    r2,r1
+sub    r3,r1
 
 align 16
 .1:
-add            r1,16
+add    r1,16
 
 vbroadcastss   a,[r7-32]
 vpsrld         b,f,23
@@ -181,14 +158,8 @@ vpaddd         b,b,e
 vpaddd         g,k,g
 vpaddd         d,u,d
 vpslld         p,p,23
-vpcmpgtd       a,b,[r7-10h]
-vpand          b,b,a
 vpslld         i,i,23
-vpcmpgtd       a,g,[r7-10h]
-vpand          g,g,a
 vpslld         t,t,23
-vpcmpgtd       a,d,[r7-10h]
-vpand          d,d,a
 vinsertf128    I,I,t,1
 
 vmovaps        A,[r7-80h]
@@ -253,12 +224,12 @@ vmulps         t,t,k
 vaddps         t,t,e
 vmulps         V,V,G
 vaddps         V,V,B
-vbroadcastss   B,[r0-32]
+vbroadcastss   B,[r0-20h]
 
 vmulps         p,f,b
 vaddps         t,t,k
 
-vbroadcastss   A,[r0+80]
+vbroadcastss   A,[r0+50h]
 vmulps         I,N,B
 vaddps         V,V,G
 vmulps         H,H,[r0-60h]
@@ -296,10 +267,8 @@ vsubps         p,p,[r0+40h]
 vmovups        [r1   -10h],p
 vmovups        [r1+r2-10h],i
 vmovups        [r1+r3-10h],t
-cmp            r10,r1
-ja             .1
-; todo: last 4-7
-; % 0 - last 4; 1 - dec ptr, rep & last 4; 2...
+cmp    r10,r1
+ja     .1
 
 %ifdef WINABI
 vmovups xmm15,[rsp-80]
@@ -312,13 +281,13 @@ vmovups xmm9, [rsp+16]
 vmovups xmm8, [rsp+32]
 vmovups xmm7, [rsp+48]
 vmovups xmm6, [rsp+64]
-add            rsp,88
-pop            rdi
-pop            rsi
+add    rsp,88
+pop    rdi
+pop    rsi
 %endif
 
-pop            rbx
-pop            rbp
+pop    rbx
+pop    rbp
 vzeroupper
 ret
 align 16

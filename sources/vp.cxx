@@ -1,17 +1,20 @@
 #include "config.h"
-
+#include <vapoursynth4.h>
 #include <vector>
-#include <vapoursynth.h>
-#if defined(_MSC_VER)
+
+#if defined _MSC_VER
+#define VP_CXX
 #include "vp.h"
 #endif
 
+const VSPlugin* plugin = 0;
 const VSAPI* vsapi = 0;
-std::vector<void(*)(VSRegisterFunction, VSPlugin*)> vregf;
+std::vector<void(*)(VSPlugin*, const VSPLUGINAPI*)> v_reg_f;
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin* plugin)
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI* vspapi)
 {
-	configFunc("xxx.xyz.vp", "vp", "VapourSynth Filter", VAPOURSYNTH_API_VERSION, 1, plugin);
-	for (auto regf : vregf)
-		regf(registerFunc, plugin);
+	::plugin = plugin;
+	vspapi->configPlugin("xxx.xyz.vp", "vp", "VapourSynth Filter", 0, VAPOURSYNTH_API_VERSION, 0, plugin);
+	for (auto reg_f : v_reg_f)
+		reg_f(plugin, vspapi);
 }

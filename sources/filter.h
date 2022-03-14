@@ -1,230 +1,262 @@
 #pragma once
 #include "config.h"
-
-#include <mutex>
-#include <algorithm>
-#include <memory>
-#include <condition_variable>
-#include <list>
-#include <vector>
-#include <set>
-#include <map>
-#include <iterator>
-#include <xxhash.h>
-#include <vapoursynth.h>
-
 #include "uf.h"
 
-extern const VSAPI* vsapi;
-extern std::vector<void(*)(VSRegisterFunction, VSPlugin*)> vregf;
+#include <vapoursynth4.h>
 
-struct vprop
+#if defined _WIN32
+#define strtok_r strtok_s
+#define strcasecmp stricmp
+#endif
+
+using namespace std::literals::string_literals;
+
+extern const VSPlugin* plugin;
+extern const VSAPI* vsapi;
+extern std::vector<void(*)(VSPlugin*, const VSPLUGINAPI*)> v_reg_f;
+
+inline std::string get_plugins_path()
 {
-	template< typename T>
-	static typename std::enable_if_t<std::is_same_v<T, std::string> ||
-		std::is_same_v<T, const char*>, const char*>
-		get(const VSMap* map, const char* key, int index, int* error)
+	std::string plugin_path = vsapi->getPluginPath(plugin);
+	return plugin_path.substr(0, plugin_path.rfind('/') + 1);
+}
+
+template< typename, typename = void>
+struct _vmap;
+
+template<>
+struct _vmap<VSNode*>
+{
+	using element_type = VSNode*;
+	static element_type get(const VSMap* map, const char* key, int index, int* error) noexcept
 	{
-		return vsapi->propGetData(map, key, index, error);
+		return vsapi->mapGetNode(map, key, index, error);
 	}
-	template< typename T>
-	static typename std::enable_if_t<std::is_integral_v<T>, int64_t>
-		get(const VSMap* map, const char* key, int index, int* error)
+};
+
+template<>
+struct _vmap<VSFunction*>
+{
+	using element_type = VSFunction*;
+	static element_type get(const VSMap* map, const char* key, int index, int* error) noexcept
 	{
-		return vsapi->propGetInt(map, key, index, error);
+		return vsapi->mapGetFunction(map, key, index, error);
 	}
-	template< typename T>
-	static typename std::enable_if_t<std::is_integral_v<T>, const int64_t*>
-		get(const VSMap* map, const char* key, int* error)
+};
+
+template< typename T>
+struct _vmap<T, std::enable_if_t<std::is_same_v<T, const char*>>>
+{
+	using element_type = const char*;
+	static element_type get(const VSMap* map, const char* key, int index, int* error) noexcept
 	{
-		return vsapi->propGetIntArray(map, key, error);
+		return vsapi->mapGetData(map, key, index, error);
 	}
-	template< typename T>
-	static typename std::enable_if_t<std::is_floating_point_v<T>, double>
-		get(const VSMap* map, const char* key, int index, int* error)
+};
+
+template< typename T>
+struct _vmap<T, std::enable_if_t<std::is_floating_point_v<T>>>
+{
+	using element_type = double;
+	static element_type get(const VSMap* map, const char* key, int index, int* error) noexcept
 	{
-		return vsapi->propGetFloat(map, key, index, error);
+		return vsapi->mapGetFloat(map, key, index, error);
 	}
-	template< typename T>
-	static typename std::enable_if_t<std::is_floating_point_v<T>, const double*>
-		get(const VSMap* map, const char* key, int* error)
+	static const element_type* get(const VSMap* map, const char* key, int* error) noexcept
 	{
-		return vsapi->propGetFloatArray(map, key, error);
+		return vsapi->mapGetFloatArray(map, key, error);
 	}
-	template< typename T>
-	static typename std::enable_if_t<std::is_same_v<T, VSNodeRef*>, T>
-		get(const VSMap* map, const char* key, int index, int* error)
+};
+
+template< typename T>
+struct _vmap<T, std::enable_if_t<std::is_integral_v<T>>>
+{
+	using element_type = int64_t;
+	static element_type get(const VSMap* map, const char* key, int index, int* error) noexcept
 	{
-		return vsapi->propGetNode(map, key, index, error);
+		return vsapi->mapGetInt(map, key, index, error);
 	}
-	template< typename T>
-	static typename std::enable_if_t<std::is_same_v<T, VSFuncRef*>, T>
-		get(const VSMap* map, const char* key, int index, int* error)
+	static const element_type* get(const VSMap* map, const char* key, int* error) noexcept
 	{
-		return vsapi->propGetFunc(map, key, index, error);
+		return vsapi->mapGetIntArray(map, key, error);
 	}
+	static_assert(sizeof(element_type) >= sizeof(T));
 };
 
 struct vmap
 {
 	vmap(const VSMap* map)
-		: map(map) {}
-	bool contains(const char* key)
+		: m_map(map)
 	{
-		return vsapi->propNumElements(map, key) >= 0;
 	}
-	int num_elements(const char* key)
+	bool contains(const char* key) const noexcept
 	{
-		return vsapi->propNumElements(map, key);
+		return vsapi->mapNumElements(m_map, key) >= 0;
 	}
-	int data_size(const char* key, int index, int* error)
+	int num_elements(const char* key) const noexcept
 	{
-		return vsapi->propGetDataSize(map, key, index, error);
+		return vsapi->mapNumElements(m_map, key);
+	}
+	/* nothrow? */
+	template< typename T>
+	std::enable_if_t<std::is_same_v<T, VSNode*>, VSNode*> get(const char* key, int index) const
+	{
+		int error;
+		auto x = _vmap<VSNode*>::get(m_map, key, index, &error);
+		return x;
+	}
+	template< typename T>
+	std::enable_if_t<std::is_same_v<T, std::string>, std::string_view> get(const char* key, int index = 0) const
+	{
+		int error;
+		size_t n = get_data_size(key, index, &error);
+		if (error)
+			return std::string_view();
+		auto p = _vmap<const char*>::get(m_map, key, index, 0);
+		return std::string_view(p, n);
 	}
 	template< typename T = int64_t>
-	T get(const char* key)
+	std::enable_if_t<!std::is_convertible_v<T, std::string_view>, T> get(const char* key) const
 	{
 		int error;
-		auto _ = vprop::get<T>(map, key, 0, &error);
-		return T(_);
+		auto x = _vmap<T>::get(m_map, key, 0, &error);
+		return static_cast<T>(x);
 	}
+	/**/
 	template< typename T>
-	T get(const char* key, T&& def)
+	[[nodiscard]] std::enable_if_t<std::is_convertible_v<T, std::string_view>, std::string_view> get(const char* key, T&& def) const
 	{
 		int error;
-		auto _ = vprop::get<T>(map, key, 0, &error);
-		return error ? def : T(_);
+		size_t n = get_data_size(key, 0, &error);
+		if (error)
+			return def;
+		auto p = _vmap<const char*>::get(m_map, key, 0, 0);
+		return std::string_view(p, n);
 	}
 	template< typename T>
-	T get(const char* key, T& def)
+	[[nodiscard]] std::enable_if_t<!std::is_convertible_v<T, std::string_view>, T> get(const char* key, T&& def) const
 	{
 		int error;
-		auto _ = vprop::get<T>(map, key, 0, &error);
-		return error ? def : T(_);
+		auto x = _vmap<T>::get(m_map, key, 0, &error);
+		return error ? def : static_cast<T>(x);
 	}
+	/**/
 	template< typename T>
-	int get(T& dst, const char* key)
+	std::enable_if_t<std::is_same_v<T, std::string>, bool> get(T& dst, const char* key) const
 	{
 		int error;
-		auto _ = vprop::get<T>(map, key, 0, &error);
-		if (!error)
-			dst = T(_);
-		return error;
+		size_t n = get_data_size(key, 0, &error);
+		if (error)
+			return false;
+		auto ptr = _vmap<const char*>::get(m_map, key, 0, 0);
+		dst.assign(ptr, n);
+		return true;
 	}
 	template< typename T>
-	int get(std::vector<T>& dst, const char* key)
+	std::enable_if_t<!std::is_convertible_v<T, std::string_view>, bool> get(T& dst, const char* key) const
+	{
+		int error;
+		auto x = _vmap<T>::get(m_map, key, 0, &error);
+		if (error)
+			return false;
+		dst = static_cast<T>(x);
+		return true;
+	}
+	/**/
+	template< typename T>
+	bool get(std::vector<T>& dst, const char* key) const
 	{
 		int error, n = num_elements(key);
-		auto p = vprop::get<T>(map, key, &error);
+		auto p = _vmap<T>::get(m_map, key, &error);
 		if (error)
-			return error;
-		if constexpr (sizeof(*p) != sizeof(T))
-			dst.clear(), std::copy_n(p, n, std::back_inserter(dst));
+			return false;
+		if constexpr (sizeof(typename _vmap<T>::element_type) != sizeof(T))
+		{
+			if (!dst.empty())
+				dst.clear();
+			dst.reserve(n);
+			std::transform(p, p + n, std::back_inserter(dst), [](auto x) { return static_cast<T>(x); });
+		}
 		else
 			dst.assign(p, p + n);
-		return error;
+		return true;
 	}
-	int get(std::vector<std::string>& dst, const char* key)
+protected:
+	int get_data_size(const char* key, int index, int* error) const noexcept
 	{
-		int error = -1, k = num_elements(key);
-		if (k)
-			dst.clear();
-		for (int i = 0; i < k; i++)
-		{
-			int n = data_size(key, i, &error);
-			if (error)
-				break;
-			auto p = vprop::get<const char*>(map, key, i, &error);
-			if (error)
-				break;
-			dst.emplace_back(std::string(p, n));
-		}
-		return error;
+		return vsapi->mapGetDataSize(m_map, key, index, error);
 	}
 private:
-	const VSMap* map;
+	const VSMap* m_map;
 };
 
 struct vfunc
 {
-	vfunc(VSFuncRef* f)
-		: f(f)
-		, map(vsapi->createMap())
+	vfunc(VSFunction* f)
+		: m_f(f)
+		, m_map(vsapi->createMap())
 	{
 	}
 	~vfunc()
 	{
-		vsapi->freeMap(map);
-		vsapi->freeFunc(f);
+		vsapi->freeMap(m_map);
+		vsapi->freeFunction(m_f);
 	}
 	vmap call()
 	{
-		vsapi->callFunc(f, 0, map, 0, 0);
-		return vmap(map);
+		vsapi->callFunction(m_f, m_map, m_map);
+		return m_map;
 	}
 private:
-	VSFuncRef* f;
-	VSMap* map;
+	VSFunction* m_f;
+	VSMap* m_map;
 };
 
 struct vfplane
 {
 	uint8_t* p;
-	int h, w, css, rowsize, pitch;
+	int h, w, css, rowsize;
+	ptrdiff_t stride;
 	vfplane()
-		: p(0), h(0), w(0), css(0), rowsize(0), pitch(0) {}
+		: p(0), h(0), w(0), css(0), rowsize(0), stride(0)
+	{
+	}
 	vfplane(int h, int w, int css)
-		: p(0), h(h), w(w), css(css), rowsize(w << css), pitch(rowsize) {}
-	vfplane(uint8_t* p, int h, int w, int css, int pitch)
-		: p(p), h(h), w(w), css(css), rowsize(w << css), pitch(pitch) {}
+		: p(0), h(h), w(w), css(css), rowsize(w << css), stride(rowsize)
+	{
+	}
+	vfplane(int h, int w, int css, int align)
+		: p(0), h(h), w(w), css(css), rowsize(w << css), stride(uf::ceil_n(rowsize, align))
+	{
+	}
+	vfplane(uint8_t* p, int h, int w, int css, ptrdiff_t stride)
+		: p(p), h(h), w(w), css(css), rowsize(w << css), stride(stride)
+	{
+	}
 	template< typename T>
-	T& at(int i, int j) const { return reinterpret_cast<T*>(p + (size_t)i * pitch)[j]; }
-#if 1
-	template< typename T, typename F>
-	void foreach(F f)
-	{
-		uint8_t* pdst = p;
-		for (int i = 0; i < h; i++)
-		{
-			for (int j = 0; j < w; j++)
-			{
-				T& x = reinterpret_cast<T*>(pdst)[j];
-				x = f(x);
-			}
-			pdst += pitch;
-		}
-	}
-#else
-	template< typename T, typename F>
-	void foreach(F f)
-	{
-		for (int i = 0; i < h; i++)
-		{
-			for (int j = 0; j < w; j++)
-				at<T>(i, j) = f(this, i, j);
-		}
-	}
-#endif
-	void copy_to(vfplane& dstp) const
+	T& at(int i, int j) const { return reinterpret_cast<T*>(p + i * stride)[j]; }
+	NO_INLINE void copy_to(vfplane& dstp) const
 	{
 		if (w != dstp.w || h != dstp.h || css != dstp.css)
 			return;
-		if (pitch != dstp.pitch)
+		if (stride != dstp.stride)
 		{
 			for (int i = 0; i < h; i++)
-				std::memcpy(dstp.p + (size_t)i * dstp.pitch, p + (size_t)i * pitch, rowsize);
+				std::copy_n(p + i * stride, rowsize, dstp.p + i * dstp.stride);
 		}
 		else
-			std::memcpy(dstp.p, p, (size_t)h * pitch);
+			std::copy_n(p, h * stride, dstp.p);
 	}
-	void copy_to(vfplane& dstp, bool is_even) const
+	NO_INLINE void copy_to(vfplane& dstp, bool is_odd) const
 	{
 		if (w != dstp.w || h != dstp.h || css != dstp.css)
 			return;
-		for (int i = is_even; i < h; i += 2)
-			std::memcpy(dstp.p + (size_t)i * dstp.pitch, p + (size_t)i * pitch, rowsize);
+		for (int i = is_odd; i < h; i += 2)
+			std::copy_n(p + i * stride, rowsize, dstp.p + i * dstp.stride);
 	}
 };
+
+typedef vfplane& vfplane_ref;
 
 struct vf
 {
@@ -232,10 +264,12 @@ struct vf
 	vf() {}
 	vf(const std::vector<vfplane>& plane)
 		: plane(plane) {}
-	template< typename T>
-	operator T();
-	uint8_t* p(int p) const { return plane[p].p; }
-	int pitch(int p) const { return plane[p].pitch; }
+	operator const VSFrame* () const;
+	operator const VSVideoFormat* () const;
+	int np() const { return static_cast<int>(plane.size()); }
+	uint8_t* ptr(int p) const { return plane[p].p; }
+	template< typename T = uint8_t>
+	ptrdiff_t stride(int p) const { return plane[p].stride / sizeof(T); }
 	int h(int p = 0) const { return plane[p].h; }
 	int w(int p = 0) const { return plane[p].w; }
 	void copy_to(vf* dstf) const
@@ -250,13 +284,17 @@ typedef std::shared_ptr<vf> vf_t;
 struct vvf
 	: vf
 {
-	const VSFrameRef* f;
+	const VSFrame* f;
+	const VSVideoFormat* ff;
 	vvf()
-		: f(0) {}
-	vvf(const VSFrameRef* f)
+		: f(0)
+		, ff(0)
+	{
+	}
+	vvf(const VSFrame* f)
 		: f(f)
 	{
-		auto ff = vsapi->getFrameFormat(f);
+		ff = vsapi->getVideoFrameFormat(f);
 		for (int p = 0; p < ff->numPlanes; p++)
 		{
 			plane.emplace_back(
@@ -265,10 +303,10 @@ struct vvf
 				uf::bsr(ff->bytesPerSample), vsapi->getStride(f, p));
 		}
 	}
-	vvf(VSFrameRef* f)
-		: f(0)
+	vvf(VSFrame* f)
+		: f(f)
 	{
-		auto ff = vsapi->getFrameFormat(f);
+		ff = vsapi->getVideoFrameFormat(f);
 		for (int p = 0; p < ff->numPlanes; p++)
 		{
 			plane.emplace_back(
@@ -282,102 +320,153 @@ struct vvf
 		if (f)
 			vsapi->freeFrame(f);
 	}
-	void reset(const VSFrameRef* f)
+	const VSFrame* release()
 	{
-		for (int p = 0; p < plane.size(); p++)
-			plane[p].p = (uint8_t*)vsapi->getReadPtr(f, p);
-		std::swap(this->f, f);
+		return std::exchange(f, nullptr);
+	}
+	void reset()
+	{
 		if (f)
 			vsapi->freeFrame(f);
+		f = 0;
+	}
+	void reset(const VSFrame* _f)
+	{
+		if (f)
+			vsapi->freeFrame(f);
+		f = _f;
+		if (plane.empty())
+		{
+			ff = vsapi->getVideoFrameFormat(_f);
+			for (int p = 0; p < ff->numPlanes; p++)
+			{
+				plane.emplace_back(
+					const_cast<uint8_t*>(vsapi->getReadPtr(_f, p)),
+					vsapi->getFrameHeight(_f, p), vsapi->getFrameWidth(_f, p),
+					uf::bsr(ff->bytesPerSample), vsapi->getStride(_f, p));
+			}
+		}
+		else
+		{
+			for (int p = 0; p < plane.size(); p++)
+				plane[p].p = const_cast<uint8_t*>(vsapi->getReadPtr(_f, p));
+		}
+	}
+	void reset(VSFrame* _f)
+	{
+		f = _f;
+		if (!plane.empty())
+		{
+			for (int p = 0; p < plane.size(); p++)
+				plane[p].p = vsapi->getWritePtr(_f, p);
+		}
+		else
+		{
+			ff = vsapi->getVideoFrameFormat(_f);
+			for (int p = 0; p < ff->numPlanes; p++)
+			{
+				plane.emplace_back(
+					vsapi->getWritePtr(_f, p),
+					vsapi->getFrameHeight(_f, p), vsapi->getFrameWidth(_f, p),
+					uf::bsr(ff->bytesPerSample), vsapi->getStride(_f, p));
+			}
+		}
+	}
+	void create(const vf& srcf, VSCore* core)
+	{
+		VSFrame* f = vsapi->newVideoFrame(srcf, srcf.w(), srcf.h(), srcf, core);
+		if (!f)
+			throw "vvf create failed"s;
+		reset(f);
+	}
+	void create(const VSVideoInfo* vi, const VSFrame* srcf, VSCore* core)
+	{
+		VSFrame* f = vsapi->newVideoFrame(&vi->format, vi->width, vi->height, srcf, core);
+		if (!f)
+			throw "vvf create failed"s;
+		reset(f);
+	}
+	void create_copy(const vf& srcf, VSCore* core)
+	{
+		VSFrame* f = vsapi->copyFrame(srcf, core);
+		if (!f)
+			throw "vvf create failed"s;
+		reset(f);
 	}
 };
 
-template<>
-inline vf::operator const VSFrameRef* ()
+inline vf::operator const VSFrame* () const
 {
-	return static_cast<vvf*>(this)->f;
+	return static_cast<const vvf*>(this)->f;
+}
+
+inline vf::operator const VSVideoFormat* () const
+{
+	return static_cast<const vvf*>(this)->ff;
 }
 
 typedef std::shared_ptr<vvf> vvf_t;
 
+enum class sample_type_e : uint8_t { BYTE, WORD, HALF, FLOAT, UNKNOWN };
+
 struct vvfcache
 {
 	const VSVideoInfo* vi;
-	int nf, np, h, w, ssh, ssw, css;
-	vvfcache(VSNodeRef* node)
-		: node(node)
+	int nf, np, ssh, ssw, bps, css;
+	sample_type_e st;
+	vvfcache(VSNode* node)
+		: m_node(node)
 	{
 		vi = vsapi->getVideoInfo(node);
 		nf = vi->numFrames;
-		np = vi->format->numPlanes;
-		h = vi->height;
-		w = vi->width;
-		ssh = vi->format->subSamplingH;
-		ssw = vi->format->subSamplingW;
-		css = uf::bsr(vi->format->bytesPerSample);
+		np = vi->format.numPlanes;
+		m_h = vi->height;
+		m_w = vi->width;
+		ssh = vi->format.subSamplingH;
+		ssw = vi->format.subSamplingW;
+		bps = vi->format.bitsPerSample;
+		css = uf::bsr(vi->format.bytesPerSample);
+		if (int t = vi->format.sampleType; t == stInteger && css == 0)
+			st = sample_type_e::BYTE;
+		else if (t == stInteger && css == 1)
+			st = sample_type_e::WORD;
+		else if (t == stFloat && css == 1)
+			st = sample_type_e::HALF;
+		else if (t == stFloat && css == 2)
+			st = sample_type_e::FLOAT;
+		else
+			st = sample_type_e::UNKNOWN;
 	}
 	~vvfcache()
 	{
-		vsapi->freeNode(node);
+		vsapi->freeNode(m_node);
 	}
 	void request(int n, VSFrameContext* frameCtx)
 	{
-		vsapi->requestFrameFilter(n, node, frameCtx);
+		vsapi->requestFrameFilter(n, m_node, frameCtx);
 	}
 	void get(vf_t& dst, int n, VSFrameContext* frameCtx)
 	{
-		auto f = vsapi->getFrameFilter(n, node, frameCtx);
+		auto f = vsapi->getFrameFilter(n, m_node, frameCtx);
 		if (!f)
-			throw "";
+			throw ""s;
 		dst = std::make_shared<vvf>(f);
 	}
-	operator VSNodeRef* () const { return node; }
+	void get(vvf& dst, int n, VSFrameContext* frameCtx)
+	{
+		auto f = vsapi->getFrameFilter(n, m_node, frameCtx);
+		if (!f)
+			throw ""s;
+		dst.reset(f);
+	}
+	operator VSNode* () const { return m_node; }
+	int h(int p = 0) const { return m_h >> (p ? ssh : 0); }
+	int w(int p = 0) const { return m_w >> (p ? ssw : 0); }
 private:
-	VSNodeRef* node;
+	VSNode* m_node;
+	int m_h, m_w;
 };
 
 typedef std::unique_ptr<vvfcache> vvfcache_t;
 
-namespace uf {
-template< typename T, typename... U>
-void free(void* p, U...)
-{
-	delete static_cast<T*>(p);
-}
-inline VSFrameRef* copy(vf_t& dst, vf_t& src, VSCore* core)
-{
-	auto f = vsapi->copyFrame(*src, core);
-	if (!f)
-		throw "";
-	dst = std::make_shared<vvf>(f);
-	return f;
-}
-inline VSFrameRef* create(vf_t& dst, int h, int w, const VSFormat* ff, const VSFrameRef* src, VSCore* core)
-{
-	auto f = vsapi->newVideoFrame(ff, w, h, src, core);
-	if (!f)
-		throw "";
-	dst = std::make_shared<vvf>(f);
-	return f;
-}
-inline uint64_t xxh_value(const char* p, const char* end)
-{
-	XXH64_state_t state;
-	XXH64_reset(&state, 0);
-	XXH64_update(&state, p, end - p);
-	return XXH64_digest(&state);
-}
-inline uint64_t xxh_value(vfplane& srcp)
-{
-	XXH64_state_t state;
-	XXH64_reset(&state, 0);
-	if (srcp.rowsize != srcp.pitch)
-	{
-		for (int i = 0; i < srcp.h; i++)
-			XXH64_update(&state, srcp.p + (size_t)i * srcp.pitch, srcp.rowsize);
-	}
-	else
-		XXH64_update(&state, srcp.p, (size_t)srcp.h * srcp.pitch);
-	return XXH64_digest(&state);
-}
-}
+#define PUSH_REG_F(f) struct reg_s { reg_s() { v_reg_f.push_back(f); } } _;

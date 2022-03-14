@@ -1,1 +1,1 @@
-add_to_avx_sources("addgrain.cxx")
+add_to_sources("addgrain.cxx;addgrain.h")

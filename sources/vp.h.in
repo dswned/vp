@@ -1,1 +1,18 @@
+#include "dfttest/dfttest.h"
+#include "nnedi/nnedi.h"
 #pragma comment(lib, "@XXHASH_LIB@")
+#ifdef USE_OPENCL
+#pragma comment(lib, "opencl.lib")
+#endif
+#ifdef USE_OPENCV
+#pragma comment(lib, "@OPENCV_LIB@")
+#endif
+#ifdef USE_FFTW
+#pragma comment(lib, "@FFTW_LIB@")
+#endif
+#ifdef USE_LZ4
+#pragma comment(lib, "@LZ4_LIB@")
+#endif
+#ifdef USE_SVML
+#pragma comment(lib, "@SVML_LIB@")
+#endif
